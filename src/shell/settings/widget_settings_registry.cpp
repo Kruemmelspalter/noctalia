@@ -641,6 +641,10 @@ namespace settings {
         {"kb", "settings.widgets.options.kilobytes"},
         {"mb", "settings.widgets.options.megabytes"},
     };
+    const std::vector<WidgetSettingSelectOption> glyphPositionOptions = {
+        {"before", "settings.widgets.options.before"},
+        {"after", "settings.widgets.options.after"},
+    };
     const std::vector<WidgetSettingSelectOption> workspaceDisplay = {
         {"id", "settings.widgets.options.id"},
         {"name", "settings.widgets.options.name"},
@@ -901,6 +905,16 @@ namespace settings {
         auto minW = intSpec("label_min_width", 0, 0.0, 200.0, 1.0);
         minW.visibleWhen = WidgetSettingVisibility{"show_label", {"true"}};
         add(std::move(minW));
+      }
+      {
+        auto showUnits = boolSpec("label_show_units", true);
+        showUnits.visibleWhen = WidgetSettingVisibility{"show_label", {"true"}};
+        add(std::move(showUnits));
+      }
+      {
+        auto glyphPosition = segmentedSpec("glyph_position", "before", glyphPositionOptions);
+        glyphPosition.visibleWhen = WidgetSettingVisibility{"show_label", {"true"}};
+        add(std::move(glyphPosition));
       }
     } else if (type == "power_profile") {
       add(boolSpec("enable_scroll", true));
