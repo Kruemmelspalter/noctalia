@@ -1,9 +1,10 @@
 #pragma once
 
+#include "config/color_spec.h"
 #include "config/config_limits.h"
+#include "config/widget_setting_value.h"
 #include "core/input/key_chord.h"
 #include "system/sysmon_threshold_profile.h"
-#include "ui/palette.h"
 #include "ui/style.h"
 
 #include <array>
@@ -101,6 +102,10 @@ struct BarMonitorOverride {
   std::optional<bool> hoverHighlight;
   BarDeadZoneOverride deadZone;
 
+  [[nodiscard]] bool isAutoHideEnabled(bool baseAutoHide, bool baseSmartAutoHide) const noexcept {
+    return autoHide.value_or(baseAutoHide) || smartAutoHide.value_or(baseSmartAutoHide);
+  }
+
   bool operator==(const BarMonitorOverride&) const = default;
 };
 
@@ -121,8 +126,10 @@ struct BarConfig {
   bool autoHide = false;             // slide out when the pointer leaves; reveal on edge approach
   bool smartAutoHide = false;        // hide while the active workspace has windows; show when it is empty
   bool showOnWorkspaceSwitch = true; // with auto_hide: briefly reveal when the active workspace changes
-  bool reserveSpace = true;          // reserve compositor exclusive zone; applies with or without auto_hide
-  std::string layer = "top";         // top | overlay — attached panels use the same layer
+
+  [[nodiscard]] constexpr bool isAutoHideEnabled() const noexcept { return autoHide || smartAutoHide; }
+  bool reserveSpace = true;  // reserve compositor exclusive zone; applies with or without auto_hide
+  std::string layer = "top"; // top | overlay — attached panels use the same layer
   std::int32_t thickness = Style::barThicknessDefault;
   float backgroundOpacity = 1.0f;
   // Inside outline for the bar background; attached panels inherit the resolved values.
@@ -220,6 +227,7 @@ struct ShellSessionConfig {
   // fitting them on a single row.
   bool grid = false;
   std::int32_t gridColumns = 3;
+  bool showShortcuts = true;
   // Optional overrides for built-in session power commands. Empty = auto-detect at runtime.
   struct ShellSessionPowerConfig {
     // Shell strings run with `/bin/sh -lc` (shell=True).
@@ -331,7 +339,6 @@ enum class KeybindAction : std::uint8_t {
 
 [[nodiscard]] std::vector<KeyChord> defaultKeybindSet(KeybindAction action);
 
-using WidgetSettingValue = std::variant<bool, std::int64_t, double, std::string, std::vector<std::string>>;
 using ConfigOverrideValue = std::variant<
     bool, std::int64_t, double, std::string, std::vector<std::string>, std::vector<ShortcutConfig>,
     std::vector<SessionPanelActionConfig>, std::vector<IdleBehaviorConfig>, std::vector<NotificationFilterConfig>,
@@ -365,6 +372,7 @@ struct WidgetConfig {
   std::unordered_map<std::string, WidgetSettingValue> settings;
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>> tables;
 
+  [[nodiscard]] const WidgetSettingValue* findSetting(const std::string& key) const;
   [[nodiscard]] std::string getString(const std::string& key, const std::string& fallback = {}) const;
   [[nodiscard]] std::vector<std::string>
   getStringList(const std::string& key, const std::vector<std::string>& fallback = {}) const;
@@ -393,12 +401,6 @@ struct WidgetConfig {
 [[nodiscard]] WidgetBarCapsuleSpec capsuleSpecFromGroup(const BarConfig& bar, const BarCapsuleGroupStyle& group);
 [[nodiscard]] float
 resolveWidgetContentScale(float barScale, const WidgetConfig* widget, std::string_view context = "widget.scale");
-
-// Color spec for user color strings: either a palette color role token or a hex color.
-[[nodiscard]] ColorSpec colorSpecFromConfigString(const std::string& raw, std::string_view context = {});
-
-// Serializes a color spec back to its config string form (palette role token or hex).
-[[nodiscard]] std::string colorSpecToConfigString(const ColorSpec& spec);
 
 // Shared output selector matching used by monitor-scoped config and IPC selectors.
 // Matches connector name exactly, or a word-boundary token within output description.
@@ -567,15 +569,17 @@ struct DockConfig {
   bool showRunning = true;             // also show running apps not in pinned list
   bool autoHide = false;               // slide out when not hovered (overlay mode)
   bool smartAutoHide = false;          // hide while the active workspace has windows; show when it is empty
-  bool reserveSpace = true;            // reserve compositor exclusive zone; applies with or without auto_hide
-  float activeScale = 1.0f;            // focused app icon scale
-  float inactiveScale = 0.85f;         // non-focused app icon scale
-  bool magnification = true;           // magnify icons near the pointer (macOS-style)
-  float magnificationScale = 1.45f;    // max icon scale multiplier at the pointer center
-  float activeOpacity = 1.0f;          // focused app icon opacity
-  float inactiveOpacity = 0.85f;       // non-focused app icon opacity
-  bool showDots = false;               // show optional running window dots below app icons
-  bool showInstanceCount = true;       // show a badge with count when app has >1 window
+
+  [[nodiscard]] constexpr bool isAutoHideEnabled() const noexcept { return autoHide || smartAutoHide; }
+  bool reserveSpace = true;         // reserve compositor exclusive zone; applies with or without auto_hide
+  float activeScale = 1.0f;         // focused app icon scale
+  float inactiveScale = 0.85f;      // non-focused app icon scale
+  bool magnification = true;        // magnify icons near the pointer (macOS-style)
+  float magnificationScale = 1.45f; // max icon scale multiplier at the pointer center
+  float activeOpacity = 1.0f;       // focused app icon opacity
+  float inactiveOpacity = 0.85f;    // non-focused app icon opacity
+  bool showDots = false;            // show optional running window dots below app icons
+  bool showInstanceCount = true;    // show a badge with count when app has >1 window
   DockLauncherPosition launcherPosition = DockLauncherPosition::None;
   std::string launcherIcon = "grid-dots";   // Tabler glyph name
   std::string launcherCustomImage = "";     // image path; overrides launcherIcon glyph when set
@@ -650,6 +654,7 @@ struct OsdKindsConfig {
 };
 
 struct OsdConfig {
+  bool enabled = true; // master gate for all OSD popups
   std::string position = "top_center";
   std::string positionVertical = "top_center";
   std::string orientation = "horizontal";
@@ -877,8 +882,9 @@ struct ShellConfig {
 
   struct PanelConfig {
     PanelTransparencyMode transparencyMode = PanelTransparencyMode::Solid;
-    bool borders = true; // panel shell outline and in-panel section cards
-    bool shadow = true;  // cast the global [shell.shadow] from panel surfaces
+    bool borders = true;             // panel shell outline and in-panel section cards
+    bool shadow = true;              // cast the global [shell.shadow] from panel surfaces
+    bool listItemBackground = false; // filled rounded background behind launcher/clipboard list items
     PanelPlacement launcherPlacement = PanelPlacement::Floating;
     PanelPlacement clipboardPlacement = PanelPlacement::Floating;
     PanelPlacement controlCenterPlacement = PanelPlacement::Attached;
@@ -915,6 +921,8 @@ struct ShellConfig {
     /// When true, refresh currency exchange rates from libqalculate's online sources.
     bool fetchExchangeRates = true;
     std::string providerPrefix = "/";
+    /// Paste shortcut after a copy-style launcher activation (calculator, emoji, …).
+    ClipboardAutoPasteMode autoPaste = ClipboardAutoPasteMode::Auto;
 
     struct DmenuConfig {
       std::vector<DmenuEntryConfig> entries;
@@ -945,6 +953,7 @@ struct ShellConfig {
     bool copyToClipboard = true;
     bool freezeScreen = true;
     bool confirmRegion = false;
+    bool showCursor = false;
     bool pipeToCommand = false;
     std::string pipeCommand;
     std::string directory;       // empty = ~/Pictures
@@ -963,6 +972,9 @@ struct ShellConfig {
 
   float cornerRadiusScale = 1.0f;
   bool buttonBorders = true;
+  bool inputBorders = true;
+  bool popupBorders = true;
+  bool popupShadows = true;
   std::string fontFamily = "sans-serif";
   std::string lang; // empty = auto-detect from $LC_ALL/$LC_MESSAGES/$LANG
   std::string timeFormat = "{:%H:%M}";
@@ -1018,9 +1030,14 @@ struct WeatherConfig {
   bool operator==(const WeatherConfig&) const = default;
 };
 
+enum class CalendarCredentialSource : std::uint8_t {
+  SecretService = 0,
+  File = 1,
+};
+
 struct CalendarConfig {
-  // A single connected account. Credentials (OAuth tokens / CalDAV app-password) are NOT stored
-  // here; they live in state.toml keyed by id. id must be [a-z0-9_] (used as a state key).
+  // A single connected account. Google refresh tokens and Secret Service-backed CalDAV passwords
+  // are not stored here. id must be [a-z0-9_] because it identifies durable credential records.
   struct Account {
     std::string id;
     std::string type; // "google" | "caldav"
@@ -1030,12 +1047,16 @@ struct CalendarConfig {
     std::string serverUrl;              // CalDAV discovery root (custom only; provider presets own theirs)
     std::string username;               // CalDAV login (caldav only)
     std::vector<std::string> calendars; // discovered collection ids; empty = all
+    CalendarCredentialSource credentialSource = CalendarCredentialSource::SecretService; // CalDAV only
+    std::string passwordFile; // required for file-backed CalDAV credentials
 
     bool operator==(const Account&) const = default;
   };
 
   bool enabled = false;
   std::int32_t refreshMinutes = 15;
+  std::string eventDateFormat = "%A %e %B";
+  std::string eventTimeFormat = "%H:%M";
   std::vector<Account> accounts;
 
   bool operator==(const CalendarConfig&) const = default;
@@ -1052,8 +1073,9 @@ struct SystemConfig {
     bool enabled = true;
     std::string cpuTempSensorPath;
     float cpuPollSeconds = 2.0f;
-    // Disabled by default so laptops with a discrete GPU are not woken just to sample it.
-    float gpuPollSeconds = kDisabledPollSeconds;
+    // GPU probes only run while something displays a GPU stat (SystemMonitorService retain counts),
+    // so an idle machine never wakes a discrete GPU. Set to 0 to stop probing it entirely.
+    float gpuPollSeconds = 5.0f;
     float memoryPollSeconds = 2.0f;
     float networkPollSeconds = 3.0f;
     float diskPollSeconds = 10.0f;
@@ -1109,6 +1131,11 @@ struct AudioConfig {
 
   bool operator==(const AudioConfig&) const = default;
 };
+
+// Normalized volume ceiling: overdrive raises it to 150%.
+[[nodiscard]] inline float maxAudioVolume(const AudioConfig& audio) noexcept {
+  return audio.enableOverdrive ? 1.5f : 1.0f;
+}
 
 enum class BrightnessBackendPreference : std::uint8_t {
   Auto = 0,
@@ -1439,6 +1466,8 @@ struct AccessibilityConfig {
 
 struct HotCornersConfig {
   bool enabled = false;
+  // Hold time in the corner before the action runs. 0 = trigger immediately on enter.
+  std::int32_t delayMs = 0;
 
   struct Corner {
     std::string action = "none";

@@ -59,13 +59,9 @@ namespace {
     return {};
   }
 
-  [[nodiscard]] bool barConfigUsesSlideSurface(const BarConfig& cfg) noexcept {
-    return cfg.autoHide || cfg.smartAutoHide;
-  }
+  [[nodiscard]] bool barConfigUsesSlideSurface(const BarConfig& cfg) noexcept { return cfg.isAutoHideEnabled(); }
 
-  [[nodiscard]] bool barSupportsSlideBehavior(const BarConfig& cfg) noexcept {
-    return cfg.autoHide || cfg.smartAutoHide;
-  }
+  [[nodiscard]] bool barSupportsSlideBehavior(const BarConfig& cfg) noexcept { return cfg.isAutoHideEnabled(); }
 
   [[nodiscard]] bool barPointerHideAllowed(const BarInstance& instance) noexcept {
     if (instance.barConfig.smartAutoHide) {
@@ -538,12 +534,13 @@ namespace {
       }
 
       // Tile only laid-out members; hidden ones keep stale geometry.
+      // Use Node visibility, some widgets (e.g. tray) root on Flex, not InputArea.
       std::vector<std::size_t> laidOut;
       laidOut.reserve(run.widgets.size());
       for (std::size_t i = 0; i < run.widgets.size(); ++i) {
         Widget* widget = run.widgets[i];
-        auto* area = widget != nullptr ? dynamic_cast<InputArea*>(widget->root()) : nullptr;
-        if (area == nullptr || !area->visible() || !area->participatesInLayout()) {
+        auto* root = widget != nullptr ? widget->root() : nullptr;
+        if (root == nullptr || !root->visible() || !root->participatesInLayout()) {
           continue;
         }
         laidOut.push_back(i);
@@ -1483,7 +1480,7 @@ void Bar::reevaluateSmartAutoHide() {
         needsRedraw = true;
       }
     } else if (!instance->pointerInside && instance->attachedPopupCount == 0 && !suppressAutoHide) {
-      if (instance->hideOpacity > 0.0f || pinnedChanged) {
+      if ((instance->hideOpacity > 0.0f || pinnedChanged) && !isWorkspacePeekActive()) {
         startHideFadeOut(*instance);
         needsRedraw = true;
       }
@@ -1493,6 +1490,10 @@ void Bar::reevaluateSmartAutoHide() {
       instance->surface->requestRedraw();
     }
   }
+}
+
+bool Bar::isWorkspacePeekActive() const noexcept {
+  return m_workspaceRevealDebounce.active() || m_workspacePeekHideTimer.active();
 }
 
 void Bar::applyPendingWorkspaceReveal() {
@@ -1511,8 +1512,7 @@ void Bar::applyPendingWorkspaceReveal() {
       if (instance == nullptr
           || instance->outputName != outputName
           || !instance->barConfig.enabled
-          || !instance->barConfig.autoHide
-          || instance->barConfig.smartAutoHide
+          || !instance->barConfig.isAutoHideEnabled()
           || !instance->barConfig.showOnWorkspaceSwitch
           || instance->surface == nullptr) {
         continue;
@@ -1536,7 +1536,10 @@ void Bar::applyPendingWorkspaceReveal() {
 
   m_workspacePeekHideTimer.start(kWorkspacePeekHold, [this, peeked = std::move(peeked)]() {
     for (BarInstance* instance : peeked) {
-      if (instance == nullptr || !instance->barConfig.autoHide || instance->pointerInside) {
+      if (instance == nullptr || !instance->barConfig.isAutoHideEnabled() || instance->pointerInside) {
+        continue;
+      }
+      if (instance->barConfig.smartAutoHide && instance->smartAutoHidePinnedVisible) {
         continue;
       }
       const bool suppressAutoHide =
@@ -3116,12 +3119,12 @@ bool Bar::onPointerEvent(const PointerEvent& event) {
   if (targetInstance != nullptr
       && event.type == PointerEvent::Type::Button
       && event.button == BTN_MIDDLE
-      && event.state == 1
+      && event.pressed
       && m_config != nullptr
       && m_config->config().shell.middleClickOpensWidgetSettings) {
     auto* widget = widgetAtPoint(*targetInstance, static_cast<float>(event.sx), static_cast<float>(event.sy));
     if (widget != nullptr
-        && !widget->reservesMiddleClick()
+        && !widget->reservesMiddleClick(static_cast<float>(event.sx), static_cast<float>(event.sy))
         && !widget->configName().empty()
         && m_openWidgetSettingsCallback) {
       m_openWidgetSettingsCallback(targetInstance->barConfig.name, std::string(widget->configName()));
@@ -3144,7 +3147,7 @@ bool Bar::onPointerEvent(const PointerEvent& event) {
     case PointerEvent::Type::Motion:
     case PointerEvent::Type::Button:
     case PointerEvent::Type::Axis:
-      if (event.type == PointerEvent::Type::Button && event.button == BTN_RIGHT && event.state == 1) {
+      if (event.type == PointerEvent::Type::Button && event.button == BTN_RIGHT && event.pressed) {
         const auto sx = static_cast<float>(event.sx);
         const auto sy = static_cast<float>(event.sy);
         const auto& deadZone = targetInstance->barConfig.deadZone;
@@ -3216,7 +3219,7 @@ bool Bar::onPointerEvent(const PointerEvent& event) {
     m_hoveredInstance->lastPointerSy = static_cast<float>(event.sy);
     const auto sx = static_cast<float>(event.sx);
     const auto sy = static_cast<float>(event.sy);
-    bool pressed = (event.state == 1); // WL_POINTER_BUTTON_STATE_PRESSED
+    bool pressed = event.pressed;
     consumed = m_hoveredInstance->inputDispatcher.pointerButton(sx, sy, event.button, pressed);
     if (pressed && !consumed) {
       if (handleBarDeadZoneButton(*m_hoveredInstance, sx, sy, event.button, m_platform)) {

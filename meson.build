@@ -81,6 +81,8 @@ xkbcommon_dep       = dependency('xkbcommon')
 glib_dep            = dependency('glib-2.0')
 gobject_dep         = dependency('gobject-2.0')
 gio_dep             = dependency('gio-2.0')
+libsecret_dep       = dependency('libsecret-1', version: '>=0.20')
+libsodium_dep       = dependency('libsodium', version: '>=1.0.18')
 polkit_agent_dep    = dependency('polkit-agent-1')
 polkit_gobject_dep  = dependency('polkit-gobject-1')
 # PipeWire/SPA headers use GCC extensions that trigger -Wpedantic/-Wconversion;
@@ -409,6 +411,9 @@ _noctalia_sources = files(
   'src/auth/pam_authenticator.cpp',
   'src/calendar/caldav_client.cpp',
   'src/calendar/caldav_discovery.cpp',
+  'src/calendar/calendar_cache.cpp',
+  'src/calendar/calendar_credential_store.cpp',
+  'src/calendar/calendar_discovery_state.cpp',
   'src/calendar/calendar_service.cpp',
   'src/calendar/google_client.cpp',
   'src/calendar/google_oauth.cpp',
@@ -443,6 +448,7 @@ _noctalia_sources = files(
   'src/dbus/logind/logind_service.cpp',
   'src/dbus/mpris/mpris_art.cpp',
   'src/dbus/mpris/mpris_service.cpp',
+  'src/dbus/network/external_ip_service.cpp',
   'src/dbus/network/inetwork_service.cpp',
   'src/dbus/network/iwd_secret_agent.cpp',
   'src/dbus/network/iwd_service.cpp',
@@ -560,6 +566,9 @@ _noctalia_sources = files(
   'src/scripting/script_runtime.cpp',
   'src/scripting/script_worker_pool.cpp',
   'src/scripting/plugin_bindings.cpp',
+  'src/security/encrypted_file_store.cpp',
+  'src/security/secret_store.cpp',
+  'src/security/secure_buffer.cpp',
   'src/system/battery_warning_monitor.cpp',
   'src/shell/bar/bar.cpp',
   'src/shell/clipboard/clipboard_paste.cpp',
@@ -590,6 +599,7 @@ _noctalia_sources = files(
   'src/shell/desktop/widgets/desktop_media_player_widget.cpp',
   'src/shell/desktop/widgets/desktop_sticker_widget.cpp',
   'src/shell/desktop/widgets/desktop_sysmon_widget.cpp',
+  'src/shell/desktop/widgets/desktop_volume_widget.cpp',
   'src/shell/desktop/widgets/plugin_desktop_widget.cpp',
   'src/shell/desktop/widgets/desktop_weather_widget.cpp',
   'src/shell/clipboard/clipboard_panel.cpp',
@@ -694,6 +704,7 @@ _noctalia_sources = files(
   'src/shell/bar/widgets/active_window_widget.cpp',
   'src/shell/bar/widgets/audio_visualizer_widget.cpp',
   'src/shell/bar/widgets/battery_widget.cpp',
+  'src/shell/bar/widgets/battery_widget_definition.cpp',
   'src/shell/bar/widgets/bluetooth_widget.cpp',
   'src/shell/bar/widgets/control_center_widget.cpp',
   'src/shell/bar/widgets/custom_button_widget.cpp',
@@ -714,6 +725,7 @@ _noctalia_sources = files(
   'src/shell/bar/widgets/session_widget.cpp',
   'src/shell/bar/widgets/settings_widget.cpp',
   'src/shell/bar/widgets/spacer_widget.cpp',
+  'src/shell/bar/widgets/text_widget.cpp',
   'src/shell/bar/widgets/sysmon_widget.cpp',
   'src/shell/bar/widgets/taskbar_widget.cpp',
   'src/shell/bar/widgets/test_widget.cpp',
@@ -721,6 +733,7 @@ _noctalia_sources = files(
   'src/shell/bar/widgets/tray_widget.cpp',
   'src/shell/bar/widgets/volume_widget.cpp',
   'src/shell/bar/widgets/brightness_widget.cpp',
+  'src/shell/bar/widgets/brightness_widget_definition.cpp',
   'src/shell/bar/widgets/wallpaper_widget.cpp',
   'src/shell/bar/widgets/weather_widget.cpp',
   'src/shell/bar/widgets/workspaces_widget.cpp',
@@ -757,6 +770,8 @@ _noctalia_sources = files(
   'src/ui/visuals/fancy_audio_visualizer.cpp',
   'src/ui/controls/box.cpp',
   'src/ui/controls/button.cpp',
+  'src/ui/controls/drag_source.cpp',
+  'src/ui/controls/drop_zone.cpp',
   'src/ui/controls/checkbox.cpp',
   'src/ui/controls/color_picker.cpp',
   'src/ui/controls/collapsible.cpp',
@@ -805,6 +820,7 @@ _noctalia_sources = files(
   'src/ui/scroll_into_view.cpp',
   'src/ui/split_pane_focus.cpp',
   'src/ui/style.cpp',
+  'src/ui/drag_drop_controller.cpp',
   'src/util/checksum.cpp',
   'src/util/clamp.cpp',
   'src/util/fuzzy_match.cpp',
@@ -874,6 +890,10 @@ _noctalia_sources = files(
   'src/theme/theme_service.cpp',
   'src/theme/json_output.cpp',
   'src/theme/kde_color_scheme.cpp',
+  'src/theme/firefox_theme/css.cpp',
+  'src/theme/firefox_theme/firefox_theme.cpp',
+  'src/theme/firefox_theme/native_messaging.cpp',
+  'src/theme/firefox_theme/settings.cpp',
   'src/theme/template_engine.cpp',
   'src/theme/cli.cpp',
   'src/ipc/cli.cpp',
@@ -932,6 +952,8 @@ noctalia_exe = executable('noctalia',
     glib_dep,
     gobject_dep,
     gio_dep,
+    libsecret_dep,
+    libsodium_dep,
     polkit_agent_dep,
     polkit_gobject_dep,
     pipewire_dep,
@@ -1043,6 +1065,30 @@ input_area_test = executable('input_area_test',
 )
 
 test('input_area', input_area_test)
+
+input_dispatcher_test = executable('input_dispatcher_test',
+  sources: files(
+    'tests/input_dispatcher_test.cpp',
+    'src/render/scene/input_dispatcher.cpp',
+    'src/render/scene/input_area.cpp',
+    'src/render/scene/node.cpp',
+    'src/render/animation/animation.cpp',
+    'src/render/animation/animation_manager.cpp',
+    'src/render/animation/motion_service.cpp',
+    'src/core/input/keybind_matcher.cpp',
+    'src/core/input/key_chord.cpp',
+    'src/core/ui_phase.cpp',
+    'src/core/log.cpp',
+    'src/wayland/text_input_service.cpp',
+  ) + _protocol_headers + _protocol_sources,
+  dependencies: [
+    wayland_client_dep,
+    xkbcommon_dep,
+  ],
+  include_directories: _noctalia_inc,
+)
+
+test('input_dispatcher', input_dispatcher_test)
 
 input_password_mode_test = executable('input_password_mode_test',
   sources: files(
@@ -1191,6 +1237,20 @@ google_client_calendar_list_test = executable('google_client_calendar_list_test'
 
 test('google_client_calendar_list', google_client_calendar_list_test)
 
+calendar_discovery_state_test = executable('calendar_discovery_state_test',
+  sources: files(
+    'tests/calendar_discovery_state_test.cpp',
+    'src/calendar/calendar_discovery_state.cpp',
+    'src/core/log.cpp',
+  ),
+  dependencies: [
+    nlohmann_dep,
+  ],
+  include_directories: _noctalia_inc,
+)
+
+test('calendar_discovery_state', calendar_discovery_state_test)
+
 time_format_test = executable('time_format_test',
   sources: files(
     'tests/time_format_test.cpp',
@@ -1324,6 +1384,8 @@ ui_tree_reconciler_test = executable('ui_tree_reconciler_test',
     'src/ui/ui_tree_reconciler.cpp',
     'src/ui/controls/box.cpp',
     'src/ui/controls/button.cpp',
+    'src/ui/controls/drag_source.cpp',
+    'src/ui/controls/drop_zone.cpp',
     'src/ui/controls/flex.cpp',
     'src/ui/controls/glyph.cpp',
     'src/ui/controls/graph.cpp',
@@ -1342,6 +1404,7 @@ ui_tree_reconciler_test = executable('ui_tree_reconciler_test',
     'src/ui/app_icon_colorization.cpp',
     'src/ui/palette.cpp',
     'src/ui/style.cpp',
+    'src/ui/drag_drop_controller.cpp',
     'src/util/clamp.cpp',
     'src/core/timer_manager.cpp',
     'src/core/input/keybind_matcher.cpp',
@@ -1405,6 +1468,18 @@ plugin_manifest_test = executable('plugin_manifest_test',
 )
 
 test('plugin_manifest', plugin_manifest_test)
+
+plugin_bindings_test = executable('plugin_bindings_test',
+  sources: files(
+    'tests/plugin_bindings_test.cpp',
+    'src/scripting/plugin_bindings.cpp',
+    'src/core/log.cpp',
+  ),
+  dependencies: [luau_dep],
+  include_directories: _noctalia_inc,
+)
+
+test('plugin_bindings', plugin_bindings_test)
 
 plugin_i18n_test = executable('plugin_i18n_test',
   sources: files(
@@ -1540,6 +1615,81 @@ state_store_test = executable('state_store_test',
 )
 
 test('state_store', state_store_test)
+
+security_primitives_test = executable('security_primitives_test',
+  sources: files(
+    'tests/security_primitives_test.cpp',
+    'src/config/atomic_file.cpp',
+    'src/security/encrypted_file_store.cpp',
+    'src/security/secure_buffer.cpp',
+  ),
+  include_directories: _noctalia_inc,
+  dependencies: [
+    libsodium_dep,
+  ],
+)
+
+test('security_primitives', security_primitives_test)
+
+secret_store_test = executable('secret_store_test',
+  sources: files(
+    'tests/secret_store_test.cpp',
+    'src/core/log.cpp',
+    'src/security/secret_store.cpp',
+    'src/security/secure_buffer.cpp',
+  ),
+  include_directories: _noctalia_inc,
+  dependencies: [
+    libsecret_dep,
+    libsodium_dep,
+  ],
+)
+
+test('secret_store', secret_store_test)
+
+calendar_credential_store_test = executable('calendar_credential_store_test',
+  sources: files(
+    'tests/calendar_credential_store_test.cpp',
+    'src/calendar/calendar_credential_store.cpp',
+    'src/core/log.cpp',
+    'src/security/secret_store.cpp',
+    'src/security/secure_buffer.cpp',
+  ),
+  include_directories: _noctalia_inc,
+  dependencies: [
+    libsecret_dep,
+    libsodium_dep,
+  ],
+)
+
+test('calendar_credential_store', calendar_credential_store_test)
+
+calendar_cache_permissions_test = executable('calendar_cache_permissions_test',
+  sources: files(
+    'tests/calendar_cache_permissions_test.cpp',
+    'src/calendar/calendar_cache.cpp',
+    'src/config/atomic_file.cpp',
+  ),
+  include_directories: _noctalia_inc,
+)
+
+test('calendar_cache_permissions', calendar_cache_permissions_test)
+
+clipboard_storage_permissions_test = executable('clipboard_storage_permissions_test',
+  sources: files(
+    'tests/clipboard_storage_permissions_test.cpp',
+    'src/config/atomic_file.cpp',
+    'src/core/log.cpp',
+    'src/wayland/clipboard_service.cpp',
+  ) + _protocol_headers + _protocol_sources,
+  include_directories: _noctalia_inc,
+  dependencies: [
+    nlohmann_dep,
+    wayland_client_dep,
+  ],
+)
+
+test('clipboard_storage_permissions', clipboard_storage_permissions_test)
 
 image_source_log_test = executable('image_source_log_test',
   sources: files(

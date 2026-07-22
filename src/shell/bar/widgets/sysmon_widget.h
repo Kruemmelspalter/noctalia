@@ -40,7 +40,7 @@ enum class SysmonStat {
   NetRx,
   NetTx
 };
-enum class SysmonDisplayMode { Text, Graph, Gauge };
+enum class SysmonDisplayMode { Text, Graph, Gauge, None };
 enum class SysmonGlyphPosition { Before, After };
 
 struct SysmonWidgetOptions {

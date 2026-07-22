@@ -212,7 +212,12 @@ private:
   std::unordered_set<int> m_stateWatchCallbackRefs;
   StateWatchHandler m_stateWatchHandler;
   std::unordered_set<int> m_streamCallbackRefs;
-  std::vector<std::shared_ptr<std::atomic<bool>>> m_streamCancels;
+  // Active runStream children; `alive` clears on process exit so the slot can be reused.
+  struct StreamRecord {
+    std::shared_ptr<std::atomic<bool>> cancel;
+    std::shared_ptr<std::atomic<bool>> alive;
+  };
+  std::vector<StreamRecord> m_streams;
   StreamLineHandler m_streamLineHandler;
   std::unordered_map<int, HttpStreamRecord> m_httpStreams; // keyed by stream key (line ref)
   HttpStreamEventHandler m_httpStreamEventHandler;
@@ -229,7 +234,7 @@ private:
   AsyncHttpResultHandler m_asyncHttpResultHandler;
   ColorPickerResultHandler m_colorPickerResultHandler;
   std::size_t m_memUsed = 0; // bytes tracked by allocate(); guarded by the worker-thread serialization
-  std::chrono::steady_clock::time_point m_callDeadline;
+  std::chrono::nanoseconds m_callCpuDeadline{};
   std::string m_currentCallName;
   bool m_budgetActive = false;
   bool m_lastCallTimedOut = false;

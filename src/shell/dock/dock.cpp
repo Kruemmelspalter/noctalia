@@ -479,7 +479,7 @@ bool Dock::onPointerEvent(const PointerEvent& event) {
     if (consumed) {
       return true;
     }
-    if (event.type == PointerEvent::Type::Button && event.state == 1) {
+    if (event.type == PointerEvent::Type::Button && event.pressed) {
       closeItemMenu();
       if (event.surface == nullptr || !m_surfaceMap.contains(event.surface)) {
         return true;
@@ -589,7 +589,7 @@ bool Dock::onPointerEvent(const PointerEvent& event) {
 
     if (m_hoveredInstance == nullptr)
       break;
-    const bool pressed = (event.state == 1);
+    const bool pressed = event.pressed;
     m_hoveredInstance->inputDispatcher.pointerButton(
         static_cast<float>(event.sx), static_cast<float>(event.sy), event.button, pressed
     );
@@ -707,6 +707,27 @@ void Dock::reevaluateSmartAutoHide() {
     shell::dock::DockInstance* instance = instanceUp.get();
     if (instance == nullptr || instance->surface == nullptr) {
       continue;
+    }
+
+    // Stale pointerInside blocks hide (and can leave smart-hide stuck after grabs / focus
+    // changes). Resync from the compositor before deciding.
+    const wl_surface* surface = instance->surface->wlSurface();
+    const bool pointerOnDock =
+        m_platform->hasPointerPosition() && surface != nullptr && m_platform->lastPointerSurface() == surface;
+    if (instance->pointerInside && !pointerOnDock) {
+      clearHoverZoomPointer(*instance);
+      instance->pointerInside = false;
+      instance->inputDispatcher.pointerLeave();
+      if (m_hoveredInstance == instance) {
+        m_hoveredInstance = nullptr;
+      }
+    } else if (!instance->pointerInside && pointerOnDock) {
+      instance->pointerInside = true;
+      instance->inputDispatcher.pointerEnter(
+          static_cast<float>(m_platform->lastPointerX()), static_cast<float>(m_platform->lastPointerY()),
+          m_platform->lastInputSerial()
+      );
+      m_hoveredInstance = instance;
     }
 
     const bool wantsPinned = dockSmartAutoHideWantsPinnedVisible(*m_platform, instance->output);
@@ -1036,8 +1057,8 @@ void Dock::closeItemMenu() {
       && m_platform->lastPointerSurface() == ownerSurface;
 
   if (owner->pointerInside) {
-    const float sx = static_cast<float>(m_platform->lastPointerX());
-    const float sy = static_cast<float>(m_platform->lastPointerY());
+    const auto sx = static_cast<float>(m_platform->lastPointerX());
+    const auto sy = static_cast<float>(m_platform->lastPointerY());
     owner->inputDispatcher.pointerEnter(sx, sy, m_platform->lastInputSerial());
     m_hoveredInstance = owner;
     updateHoverZoomPointer(*owner, sx, sy);

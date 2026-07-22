@@ -10,6 +10,7 @@
 #include "util/file_utils.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <format>
 #include <stdexcept>
 #include <unordered_map>
@@ -61,6 +62,7 @@ namespace noctalia::config::schema {
 
   const Schema<OsdConfig>& osdSchema() {
     static const Schema<OsdConfig> s = {
+        field(&OsdConfig::enabled, "enabled"),
         field(&OsdConfig::position, "position"),
         field(&OsdConfig::positionVertical, "position_vertical"),
         field(&OsdConfig::orientation, "orientation"),
@@ -392,6 +394,7 @@ namespace noctalia::config::schema {
     };
     static const Schema<HotCornersConfig> s = {
         field(&HotCornersConfig::enabled, "enabled"),
+        field(&HotCornersConfig::delayMs, "delay_ms", kHotCornersDelayMsRange),
         subTable(&HotCornersConfig::topLeft, "top_left", cornerSchema),
         subTable(&HotCornersConfig::topRight, "top_right", cornerSchema),
         subTable(&HotCornersConfig::bottomLeft, "bottom_left", cornerSchema),
@@ -541,10 +544,56 @@ namespace noctalia::config::schema {
           field(&CalendarConfig::Account::serverUrl, "server_url"),
           field(&CalendarConfig::Account::username, "username"),
           field(&CalendarConfig::Account::calendars, "calendars"),
+          custom<CalendarConfig::Account>(
+              "credential_source",
+              [](const toml::table& table, CalendarConfig::Account& out, std::string_view parentPath,
+                 Diagnostics& diag) {
+                const auto value = table["credential_source"].value<std::string>();
+                if (!value.has_value()) {
+                  return;
+                }
+                const std::string source = StringUtils::trim(*value);
+                if (source == "secret-service") {
+                  out.credentialSource = CalendarCredentialSource::SecretService;
+                } else if (source == "file") {
+                  out.credentialSource = CalendarCredentialSource::File;
+                } else {
+                  diag.error(
+                      joinPath(parentPath, "credential_source"),
+                      R"(credential_source must be "secret-service" or "file")"
+                  );
+                }
+              },
+              [](toml::table& table, const CalendarConfig::Account& in) {
+                table.insert_or_assign(
+                    "credential_source",
+                    in.credentialSource == CalendarCredentialSource::File ? "file" : "secret-service"
+                );
+              }
+          ),
+          pathStringField(&CalendarConfig::Account::passwordFile, "password_file"),
           finalize<CalendarConfig::Account>([](CalendarConfig::Account& out, std::string_view parentPath,
                                                Diagnostics& diag) {
             if (out.type != "caldav") {
+              if (out.credentialSource != CalendarCredentialSource::SecretService) {
+                diag.error(joinPath(parentPath, "credential_source"), "credential_source is only valid for caldav");
+              }
+              if (!out.passwordFile.empty()) {
+                diag.error(joinPath(parentPath, "password_file"), "password_file is only valid for caldav");
+              }
               return;
+            }
+            if (out.credentialSource == CalendarCredentialSource::File) {
+              if (out.passwordFile.empty()) {
+                diag.error(
+                    joinPath(parentPath, "password_file"),
+                    R"(caldav accounts with credential_source = "file" require password_file)"
+                );
+              } else if (!std::filesystem::path(out.passwordFile).is_absolute()) {
+                diag.error(joinPath(parentPath, "password_file"), "password_file must resolve to an absolute path");
+              }
+            } else if (!out.passwordFile.empty()) {
+              diag.error(joinPath(parentPath, "password_file"), R"(password_file requires credential_source = "file")");
             }
             if (out.provider.empty()) {
               diag.error(
@@ -1183,6 +1232,7 @@ namespace noctalia::config::schema {
           enumField(&ShellConfig::PanelConfig::transparencyMode, "transparency_mode", kPanelTransparencyModes),
           field(&ShellConfig::PanelConfig::borders, "borders"),
           field(&ShellConfig::PanelConfig::shadow, "shadow"),
+          field(&ShellConfig::PanelConfig::listItemBackground, "list_item_background"),
           enumField(&ShellConfig::PanelConfig::launcherPlacement, "launcher_placement", kPanelPlacements),
           enumField(&ShellConfig::PanelConfig::clipboardPlacement, "clipboard_placement", kPanelPlacements),
           enumField(&ShellConfig::PanelConfig::controlCenterPlacement, "control_center_placement", kPanelPlacements),
@@ -1222,6 +1272,7 @@ namespace noctalia::config::schema {
           field(&ShellConfig::LauncherConfig::sortByUsage, "sort_by_usage"),
           field(&ShellConfig::LauncherConfig::fetchExchangeRates, "fetch_exchange_rates"),
           field(&ShellConfig::LauncherConfig::providerPrefix, "provider_prefix"),
+          enumField(&ShellConfig::LauncherConfig::autoPaste, "auto_paste", kClipboardAutoPasteModes),
           subTable(&ShellConfig::LauncherConfig::dmenu, "dmenu", shellLauncherDmenuSchema()),
           namedMap<ShellConfig::LauncherConfig, LauncherProviderConfig>(
               &ShellConfig::LauncherConfig::providers, "providers", launcherProviderSchema(),
@@ -1257,6 +1308,7 @@ namespace noctalia::config::schema {
           field(&ShellConfig::ScreenshotConfig::copyToClipboard, "copy_to_clipboard"),
           field(&ShellConfig::ScreenshotConfig::freezeScreen, "freeze_screen"),
           field(&ShellConfig::ScreenshotConfig::confirmRegion, "confirm_region"),
+          field(&ShellConfig::ScreenshotConfig::showCursor, "show_cursor"),
           field(&ShellConfig::ScreenshotConfig::pipeToCommand, "pipe_to_command"),
           field(&ShellConfig::ScreenshotConfig::pipeCommand, "pipe_command"),
           field(&ShellConfig::ScreenshotConfig::directory, "directory"),
@@ -1358,6 +1410,7 @@ namespace noctalia::config::schema {
           ),
           field(&ShellSessionConfig::grid, "grid"),
           field(&ShellSessionConfig::gridColumns, "grid_columns", kSessionGridColumnsRange),
+          field(&ShellSessionConfig::showShortcuts, "show_shortcuts"),
           subTable(&ShellSessionConfig::power, "power", shellSessionPowerSchema()),
       };
       return s;
@@ -1368,6 +1421,9 @@ namespace noctalia::config::schema {
     static const Schema<ShellConfig> s = {
         field(&ShellConfig::cornerRadiusScale, "corner_radius_scale", kCornerRadiusScaleRange),
         field(&ShellConfig::buttonBorders, "button_borders"),
+        field(&ShellConfig::inputBorders, "input_borders"),
+        field(&ShellConfig::popupBorders, "popup_borders"),
+        field(&ShellConfig::popupShadows, "popup_shadows"),
         // font_family is trimmed; empty falls back to sans-serif.
         custom<ShellConfig>(
             "font_family",
@@ -1499,6 +1555,8 @@ namespace noctalia::config::schema {
     static const Schema<CalendarConfig> s = {
         field(&CalendarConfig::enabled, "enabled"),
         field(&CalendarConfig::refreshMinutes, "refresh_minutes", kRefreshMinutesRange),
+        field(&CalendarConfig::eventDateFormat, "event_date_format"),
+        field(&CalendarConfig::eventTimeFormat, "event_time_format"),
         namedMap<CalendarConfig, CalendarConfig::Account>(
             &CalendarConfig::accounts, "account", calendarAccountSchema(),
             [](CalendarConfig::Account& a, std::string_view id) { a.id = std::string(id); },

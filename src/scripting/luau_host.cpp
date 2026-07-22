@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -109,7 +110,7 @@ namespace {
     try {
       std::thread([command = std::move(command)]() mutable {
         try {
-          (void)process::runAsync(command);
+          (void)process::runAsync(std::vector<std::string>{"/bin/sh", "-c", std::move(command)});
         } catch (...) {
         }
         releaseDetachedCommandSlot();
@@ -161,6 +162,18 @@ namespace {
         timeoutMs, static_cast<double>(kMinCommandTimeout.count()), static_cast<double>(kMaxCommandTimeout.count())
     );
     return std::chrono::milliseconds(static_cast<int>(bounded));
+  }
+
+  // CPU time consumed by the calling thread. Callback budgets meter against this, so
+  // a worker thread descheduled by a system-wide stall stays within budget. The
+  // interrupt hook runs only between VM instructions, so a callback blocked in a
+  // syscall is not interruptible at all.
+  std::chrono::nanoseconds threadCpuTime() {
+    timespec ts{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+      return std::chrono::nanoseconds::zero();
+    }
+    return std::chrono::seconds(ts.tv_sec) + std::chrono::nanoseconds(ts.tv_nsec);
   }
 
   void budgetInterrupt(lua_State* L, int /*gc*/) {
@@ -911,6 +924,7 @@ namespace {
     request.basicUsername = reqStringField(L, tableIdx, "basic_username");
     request.basicPassword = reqStringField(L, tableIdx, "basic_password");
     request.followRedirects = reqBoolField(L, tableIdx, "follow_redirects", false);
+    request.allowInsecureTls = reqBoolField(L, tableIdx, "allow_insecure_tls", false);
     lua_getfield(L, tableIdx, "headers");
     if (lua_istable(L, -1)) {
       const int headersIdx = lua_gettop(L);
@@ -1677,7 +1691,12 @@ void LuauHost::stateWatch(std::string key, int callbackRef) {
 bool LuauHost::hasStateWatchCallback(int callbackRef) const { return m_stateWatchCallbackRefs.contains(callbackRef); }
 
 bool LuauHost::startStream(std::string command, int callbackRef) {
-  if (command.empty() || callbackRef <= LUA_REFNIL || m_streamCancels.size() >= kMaxStreamsPerHost) {
+  // Drop finished streams so the per-host cap only counts live children.
+  std::erase_if(m_streams, [](const StreamRecord& stream) {
+    return stream.alive == nullptr || !stream.alive->load(std::memory_order_relaxed);
+  });
+
+  if (command.empty() || callbackRef <= LUA_REFNIL || m_streams.size() >= kMaxStreamsPerHost) {
     return false;
   }
   auto handler = m_streamLineHandler;
@@ -1687,7 +1706,8 @@ bool LuauHost::startStream(std::string command, int callbackRef) {
 
   m_streamCallbackRefs.insert(callbackRef);
   auto cancel = std::make_shared<std::atomic<bool>>(false);
-  m_streamCancels.push_back(cancel);
+  auto alive = std::make_shared<std::atomic<bool>>(true);
+  m_streams.push_back(StreamRecord{.cancel = cancel, .alive = alive});
 
   const std::uint64_t hostId = m_hostId;
   auto buffer = std::make_shared<std::string>();
@@ -1710,11 +1730,16 @@ bool LuauHost::startStream(std::string command, int callbackRef) {
       buffer->clear(); // drop a pathological unbounded line
     }
   };
+  callbacks.onExit = [alive](process::RunResult) { alive->store(false, std::memory_order_relaxed); };
 
   process::RunOptions options;
   options.cancel = std::move(cancel);
-  // No timeout (long-lived); no onExit so output is never accumulated, only streamed.
-  return process::runAsync({"/bin/sh", "-c", std::move(command)}, std::move(callbacks), std::move(options));
+  options.maxOutputBytes = 0; // stream only; do not accumulate for onExit
+  if (!process::runAsync({"/bin/sh", "-c", std::move(command)}, std::move(callbacks), std::move(options))) {
+    m_streams.pop_back();
+    return false;
+  }
+  return true;
 }
 
 bool LuauHost::callStreamCallback(int callbackRef, const std::string& line, std::chrono::milliseconds budget) {
@@ -1735,12 +1760,12 @@ bool LuauHost::callStreamCallback(int callbackRef, const std::string& line, std:
 bool LuauHost::hasStreamCallback(int callbackRef) const { return m_streamCallbackRefs.contains(callbackRef); }
 
 void LuauHost::stopAllStreams() noexcept {
-  for (const auto& cancel : m_streamCancels) {
-    if (cancel) {
-      cancel->store(true, std::memory_order_relaxed);
+  for (const auto& stream : m_streams) {
+    if (stream.cancel) {
+      stream.cancel->store(true, std::memory_order_relaxed);
     }
   }
-  m_streamCancels.clear();
+  m_streams.clear();
 }
 
 int LuauHost::startHttpStream(HttpRequest request, int lineRef, int closeRef) {
@@ -1960,12 +1985,15 @@ void LuauHost::interruptIfBudgetExceeded(lua_State* L) {
   if (!m_budgetActive) {
     return;
   }
-  if (std::chrono::steady_clock::now() <= m_callDeadline) {
+  if (threadCpuTime() <= m_callCpuDeadline) {
     return;
   }
   m_lastCallTimedOut = true;
   m_budgetActive = false;
-  luaL_error(L, "script callback '%s' timed out", m_currentCallName.empty() ? "(unknown)" : m_currentCallName.c_str());
+  luaL_error(
+      L, "script callback '%s' exceeded its CPU budget",
+      m_currentCallName.empty() ? "(unknown)" : m_currentCallName.c_str()
+  );
 }
 
 void LuauHost::loadTranslations() { m_translations.load(m_pluginDir); }
@@ -2056,7 +2084,7 @@ std::optional<std::string> LuauHost::scriptFocusedOutputName() const {
 
 void LuauHost::beginBudget(std::string_view name, std::chrono::milliseconds budget) {
   m_currentCallName = std::string(name);
-  m_callDeadline = std::chrono::steady_clock::now() + std::max(budget, std::chrono::milliseconds(1));
+  m_callCpuDeadline = threadCpuTime() + std::max(budget, std::chrono::milliseconds(1));
   m_lastCallTimedOut = false;
   m_budgetActive = true;
 }

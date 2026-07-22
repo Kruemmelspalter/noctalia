@@ -343,6 +343,10 @@ void Application::syncClipboardService() {
 }
 
 void Application::initServices() {
+  if (!security::initializeSecurityPrimitives()) {
+    kLog.error("libsodium initialization failed; encrypted persistence is unavailable");
+  }
+  m_secretStore.retryAvailabilityCheck();
   initStyleThemeAndWayland();
   initWaylandCallbacks();
   initAuxServicesAndHooks();
@@ -366,6 +370,9 @@ void Application::initStyleThemeAndWayland() {
         std::isfinite(lastCornerRadiusScale) && std::abs(corner - lastCornerRadiusScale) > 1.0e-4f;
     Style::setCornerRadiusScale(corner);
     Style::setButtonBordersEnabled(m_configService.config().shell.buttonBorders);
+    Style::setInputBordersEnabled(m_configService.config().shell.inputBorders);
+    Style::setPopupBordersEnabled(m_configService.config().shell.popupBorders);
+    Style::setPopupShadowsEnabled(m_configService.config().shell.popupShadows);
     lastCornerRadiusScale = corner;
     if (cornerChanged) {
       m_notificationToast.requestLayout();
@@ -486,18 +493,16 @@ void Application::initStyleThemeAndWayland() {
     syncScriptApiWallpaperDirectory();
     const std::optional<std::string> previousMode = lastResolvedThemeMode;
     lastResolvedThemeMode = resolvedMode;
-    m_templateApplyService.setAfterApplyCallback([this, resolvedMode, previousMode, configuredMode]() {
-      m_hookManager.fire(HookKind::ColorsChanged);
-      if (previousMode.has_value() && *previousMode != resolvedMode) {
-        m_hookManager.fire(
-            HookKind::ThemeModeChanged,
-            {{"NOCTALIA_THEME_MODE", resolvedMode},
-             {"NOCTALIA_THEME_MODE_PREVIOUS", *previousMode},
-             {"NOCTALIA_THEME_MODE_CONFIGURED", configuredMode}}
-        );
-      }
-    });
+    m_templateApplyService.setAfterApplyCallback([this]() { m_hookManager.fire(HookKind::ColorsChanged); });
     m_templateApplyService.apply(generated, mode);
+    if (previousMode.has_value() && *previousMode != resolvedMode) {
+      m_hookManager.fire(
+          HookKind::ThemeModeChanged,
+          {{"NOCTALIA_THEME_MODE", resolvedMode},
+           {"NOCTALIA_THEME_MODE_PREVIOUS", *previousMode},
+           {"NOCTALIA_THEME_MODE_CONFIGURED", configuredMode}}
+      );
+    }
   });
   m_themeService.apply();
   syncScriptApiWallpaperDirectory();
@@ -936,6 +941,7 @@ void Application::initSystemBusServices() {
       m_networkService->setChangeCallback(
           [this, shouldRefreshControlCenter](const NetworkState& state, NetworkChangeOrigin origin) {
             onNetworkStateChangedForEvents(state, origin);
+            m_externalIpService.onNetworkChanged();
             m_bar.refresh();
             if (shouldRefreshControlCenter()) {
               m_panelManager.refresh();
@@ -953,6 +959,7 @@ void Application::initSystemBusServices() {
         m_networkService->setChangeCallback(
             [this, shouldRefreshControlCenter](const NetworkState& state, NetworkChangeOrigin origin) {
               onNetworkStateChangedForEvents(state, origin);
+              m_externalIpService.onNetworkChanged();
               m_bar.refresh();
               if (shouldRefreshControlCenter()) {
                 m_panelManager.refresh();
@@ -970,6 +977,7 @@ void Application::initSystemBusServices() {
           m_networkService->setChangeCallback(
               [this, shouldRefreshControlCenter](const NetworkState& state, NetworkChangeOrigin origin) {
                 onNetworkStateChangedForEvents(state, origin);
+                m_externalIpService.onNetworkChanged();
                 m_bar.refresh();
                 if (shouldRefreshControlCenter()) {
                   m_panelManager.refresh();
@@ -986,6 +994,18 @@ void Application::initSystemBusServices() {
         }
       }
     }
+
+    if (m_networkService != nullptr) {
+      m_externalIpService.setNetworkService(m_networkService.get());
+      m_externalIpService.setChangeCallback([this, shouldRefreshControlCenter]() {
+        m_bar.refresh();
+        if (shouldRefreshControlCenter()) {
+          m_panelManager.refresh();
+        }
+      });
+      m_externalIpService.onNetworkChanged();
+    }
+    m_configService.addReloadCallback([this]() { m_externalIpService.onConfigReload(); });
 
     if (m_networkService != nullptr && m_networkService->supportsSecretAgent()) {
       try {
